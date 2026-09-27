@@ -2,6 +2,8 @@
 #include <psyz.h>
 #include <kernel.h>
 #include <libgte.h>
+#include <libgpu.h>
+#include <string.h>
 
 ZTEST_SETUP(gte) { InitGeom(); }
 ZTEST_TEARDOWN(gte) { InitGeom(); }
@@ -936,4 +938,261 @@ ZTEST(gte, outer_product_preserves_rot_matrix) {
     OuterProduct12(&a, &b, &out);
     ReadRotMatrix(&read);
     zexpect_matrix_eq(&m, &read);
+}
+
+ZTEST(gte, gte_rt_stores_untruncated_mac) {
+    MATRIX m = {{{0x2000, 0, 0}, {0, 0x2000, 0}, {0, 0, 0x2000}},
+                {100, 200, 300}};
+    SVECTOR in = {0x7000, -0x7000, 100};
+    VECTOR out = {0};
+    unsigned int flag = 0;
+    gte_SetRotMatrix(&m);
+    gte_SetTransMatrix(&m);
+    gte_ldv0(&in);
+    gte_rt();
+    gte_stlvnl(&out);
+    gte_stflg(&flag);
+    zexpect_s32_eq(0xE064, out.vx);
+    zexpect_s32_eq(-0xDF38, out.vy);
+    zexpect_s32_eq(500, out.vz);
+    zexpect_u32_eq(0x81800000, flag);
+}
+
+ZTEST(gte, vector_normal) {
+    VECTOR in[] = {{0x1000, 0, 0},
+                   {0x300, 0x400, 0},
+                   {-0x300, 0, 0x400},
+                   {0x10000, 0x10000, 0x10000},
+                   {7, -11, 13}};
+    VECTOR exp[] = {{0x1000, 0, 0},
+                    {2457, 3276, 0},
+                    {-2457, 0, 3276},
+                    {0, 0, 0},
+                    {1564, -2458, 2904}};
+    int i;
+    for (i = 0; i < 5; i++) {
+        VECTOR out = {0};
+        VectorNormal(&in[i], &out);
+        zprintf("vector %d\n", i);
+        zexpect_s32_eq(exp[i].vx, out.vx);
+        zexpect_s32_eq(exp[i].vy, out.vy);
+        zexpect_s32_eq(exp[i].vz, out.vz);
+    }
+}
+
+ZTEST(gte, vector_normal_varied) {
+    VECTOR in[] = {
+        {1, 1, 1},  {100, 200, -300}, {0x7FFF, 0, 0},   {-5000, 3000, 12000},
+        {-1, 0, 0}, {0, 0, 0},        {0x12345, -2, 3}, {20000, 20000, 0}};
+    VECTOR exp[] = {{2364, 2364, 2364}, {1097, 2194, -3292}, {4103, 0, 0},
+                    {-1539, 922, 3691}, {-4096, 0, 0},       {0, 0, 0},
+                    {4115, -1, 1},      {2901, 2901, 0}};
+    int i;
+    for (i = 0; i < 8; i++) {
+        VECTOR out = {0};
+        VectorNormal(&in[i], &out);
+        zexpect_s32_eq(exp[i].vx, out.vx);
+        zexpect_s32_eq(exp[i].vy, out.vy);
+        zexpect_s32_eq(exp[i].vz, out.vz);
+    }
+}
+
+ZTEST(gte, vector_normal_s) {
+    VECTOR in[] = {{1, 1, 1},
+                   {100, 200, -300},
+                   {0x7FFF, 0, 0},
+                   {-5000, 3000, 12000},
+                   {0x12345, -2, 3},
+                   {0, 0, 0},
+                   {0x10000, 0x10000, 0x10000}};
+    SVECTOR exp[] = {{2364, 2364, 2364}, {1097, 2194, -3292}, {4103, 0, 0},
+                     {-1539, 922, 3691}, {4115, -1, 1},       {0, 0, 0},
+                     {0, 0, 0}};
+    long exp_ret[] = {3, 140000, 0x3FFF0001, 178000000, 81522854, 0, 0};
+    int i;
+    for (i = 0; i < 7; i++) {
+        SVECTOR out = {0x5555, 0x5555, 0x5555, 0x5555};
+        zexpect_s32_eq(exp_ret[i], VectorNormalS(&in[i], &out));
+        zexpect_s16_eq(exp[i].vx, out.vx);
+        zexpect_s16_eq(exp[i].vy, out.vy);
+        zexpect_s16_eq(exp[i].vz, out.vz);
+        zexpect_s16_eq(0x5555, out.pad);
+    }
+}
+
+ZTEST(gte, vector_normal_ss) {
+    SVECTOR in[] = {
+        {1, 1, 1},  {100, 200, -300}, {0x7FFF, 0, 0}, {-5000, 3000, 12000},
+        {-1, 0, 0}, {-0x8000, 0, 0},  {0, 0, 0}};
+    SVECTOR exp[] = {{2364, 2364, 2364}, {1097, 2194, -3292}, {4103, 0, 0},
+                     {-1539, 922, 3691}, {-4096, 0, 0},       {-4096, 0, 0},
+                     {0, 0, 0}};
+    long exp_ret[] = {3, 140000, 0x3FFF0001, 178000000, 1, 0x40000000, 0};
+    int i;
+    for (i = 0; i < 7; i++) {
+        SVECTOR out = {0x5555, 0x5555, 0x5555, 0x5555};
+        zexpect_s32_eq(exp_ret[i], VectorNormalSS(&in[i], &out));
+        zexpect_s16_eq(exp[i].vx, out.vx);
+        zexpect_s16_eq(exp[i].vy, out.vy);
+        zexpect_s16_eq(exp[i].vz, out.vz);
+        zexpect_s16_eq(0x5555, out.pad);
+    }
+}
+
+static void SetupProjection(void) {
+    MATRIX m = {{{0x1000, 0, 0}, {0, 0x1000, 0}, {0, 0, 0x1000}}, {0, 0, 1000}};
+    SetGeomOffset(160, 120);
+    SetGeomScreen(1000);
+    gte_SetRotMatrix(&m);
+    gte_SetTransMatrix(&m);
+}
+
+ZTEST(gte, gte_rt_applies_rotation_and_translation) {
+    MATRIX m = {{{0, 0x1000, 0}, {0, 0, 0x1000}, {0x1000, 0, 0}},
+                {-10, 20, -30}};
+    SVECTOR in = {1, 2, 3};
+    VECTOR out = {0};
+    gte_SetRotMatrix(&m);
+    gte_SetTransMatrix(&m);
+    gte_ldv0(&in);
+    gte_rt();
+    gte_stlvnl(&out);
+    zexpect_s32_eq(-8, out.vx);
+    zexpect_s32_eq(23, out.vy);
+    zexpect_s32_eq(-29, out.vz);
+}
+
+ZTEST(gte, gte_rt_keeps_screen_xy_fifo) {
+    SVECTOR v0 = {100, 50, 0}, v1 = {-100, -50, 0}, v2 = {0, 0, 0};
+    SVECTOR other = {500, 500, 500};
+    int sxy0 = 0, sxy1 = 0, sxy2 = 0;
+    SetupProjection();
+    gte_ldv3(&v0, &v1, &v2);
+    gte_rtpt();
+    gte_ldv0(&other);
+    gte_rt();
+    gte_stsxy3(&sxy0, &sxy1, &sxy2);
+    zexpect_u32_eq(SXY(260, 170), sxy0);
+    zexpect_u32_eq(SXY(60, 70), sxy1);
+    zexpect_u32_eq(SXY(160, 120), sxy2);
+}
+
+ZTEST(gte, gte_stflg_is_zero_without_overflow) {
+    SVECTOR in = {1, 2, 3};
+    unsigned int flag = 0xDEADBEEF;
+    SetupProjection();
+    gte_ldv0(&in);
+    gte_rt();
+    gte_stflg(&flag);
+    zexpect_u32_eq(0, flag);
+}
+
+ZTEST(gte, gte_readflg_matches_stflg) {
+    MATRIX m = {{{0x2000, 0, 0}, {0, 0x2000, 0}, {0, 0, 0x2000}}, {0, 0, 0}};
+    SVECTOR in = {0x7000, 1, -0x7000};
+    unsigned int stored = 0, read = 0;
+    gte_SetRotMatrix(&m);
+    gte_SetTransMatrix(&m);
+    gte_ldv0(&in);
+    gte_rt();
+    gte_stflg(&stored);
+    gte_readflg(read);
+    zexpect_u32_eq(0x81400000, stored);
+    zexpect_u32_eq(stored, read);
+}
+
+ZTEST(gte, gte_stsxy3_g3_fills_poly_vertices) {
+    SVECTOR v0 = {100, 50, 0}, v1 = {-100, -50, 0}, v2 = {30, -40, 1000};
+    POLY_G3 poly;
+    memset(&poly, 0xCC, sizeof(poly));
+    SetupProjection();
+    gte_ldv3(&v0, &v1, &v2);
+    gte_rtpt();
+    gte_stsxy3_g3(&poly);
+    zexpect_s16_eq(260, poly.x0);
+    zexpect_s16_eq(170, poly.y0);
+    zexpect_s16_eq(60, poly.x1);
+    zexpect_s16_eq(70, poly.y1);
+    zexpect_s16_eq(175, poly.x2);
+    zexpect_s16_eq(100, poly.y2);
+    zexpect_u8_eq(0xCC, poly.r1);
+    zexpect_u8_eq(0xCC, poly.code);
+}
+
+static void RtWithIrSaturation(void) {
+    MATRIX m = {{{0x2000, 0, 0}, {0, 0x2000, 0}, {0, 0, 0x2000}}, {0, 0, 0}};
+    SVECTOR in = {0x7000, 0x7000, 0};
+    gte_SetRotMatrix(&m);
+    gte_SetTransMatrix(&m);
+    gte_ldv0(&in);
+    gte_rt();
+}
+
+ZTEST(gte, gte_stflg_sign_extends_into_long) {
+    long flag = 0x12345678;
+    RtWithIrSaturation();
+    gte_stflg(&flag);
+    zexpect_s32_eq((int)0x81800000, (int)flag);
+    zexpect_s32_eq(1, flag < 0);
+}
+
+ZTEST(gte, gte_readflg_sign_extends_into_long) {
+    long flag = 0x12345678;
+    RtWithIrSaturation();
+    gte_readflg(flag);
+    zexpect_s32_eq((int)0x81800000, (int)flag);
+    zexpect_s32_eq(1, flag < 0);
+}
+
+ZTEST(gte, push_pop_matrix) {
+    MATRIX a = {{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}, {10, 20, 30}};
+    MATRIX b = {{{-1, -2, -3}, {-4, -5, -6}, {-7, -8, -9}}, {-10, -20, -30}};
+    MATRIX c = {{{0x1000, 0, 0}, {0, 0x1000, 0}, {0, 0, 0x1000}}, {0, 0, 0}};
+    MATRIX read = {0};
+    SetRotMatrix(&a);
+    SetTransMatrix(&a);
+    PushMatrix();
+    SetRotMatrix(&b);
+    SetTransMatrix(&b);
+    PushMatrix();
+    SetRotMatrix(&c);
+    SetTransMatrix(&c);
+    PopMatrix();
+    ReadRotMatrix(&read);
+    zexpect_matrix_eq(&b, &read);
+    PopMatrix();
+    ReadRotMatrix(&read);
+    zexpect_matrix_eq(&a, &read);
+}
+
+ZTEST(gte, pop_matrix_on_empty_stack_keeps_matrix) {
+    MATRIX a = {{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}, {10, 20, 30}};
+    MATRIX read = {0};
+    SetRotMatrix(&a);
+    SetTransMatrix(&a);
+    PopMatrix();
+    ReadRotMatrix(&read);
+    zexpect_matrix_eq(&a, &read);
+}
+
+ZTEST(gte, push_matrix_holds_20_entries) {
+    MATRIX m = {{{0x1000, 0, 0}, {0, 0x1000, 0}, {0, 0, 0x1000}}, {0, 0, 0}};
+    MATRIX read = {0};
+    int i;
+    SetRotMatrix(&m);
+    for (i = 0; i < 21; i++) {
+        m.t[0] = i;
+        SetTransMatrix(&m);
+        PushMatrix();
+    }
+    m.t[0] = 99;
+    SetTransMatrix(&m);
+    for (i = 19; i >= 0; i--) {
+        PopMatrix();
+        ReadRotMatrix(&read);
+        zexpect_s32_eq(i, read.t[0]);
+    }
+    PopMatrix();
+    ReadRotMatrix(&read);
+    zexpect_s32_eq(0, read.t[0]);
 }
