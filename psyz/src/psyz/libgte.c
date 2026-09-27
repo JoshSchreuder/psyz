@@ -1160,6 +1160,11 @@ void SetTransVector(VECTOR* v) {
     M.t[2] = v->vz;
 }
 
+MATRIX* ReadRotMatrix(MATRIX* m) {
+    *m = M;
+    return m;
+}
+
 void SetLightMatrix(MATRIX* m) {
     L1.m[0][0] = m->m[0][0];
     L1.m[0][1] = m->m[0][1];
@@ -2121,6 +2126,33 @@ long AverageZ4(long sz0, long sz1, long sz2, long sz3) {
     SZ3 = sz3;
     AVSZ4();
     return MAC0 >> 12;
+}
+
+static VECTOR* OuterProduct(
+    VECTOR* v0, VECTOR* v1, VECTOR* v2, unsigned int cmd25) {
+    short d1 = M.m[0][0], d2 = M.m[1][1], d3 = M.m[2][2];
+    M.m[0][0] = (short)v0->vx;
+    M.m[1][1] = (short)v0->vy;
+    M.m[2][2] = (short)v0->vz;
+    IR1 = (short)v1->vx;
+    IR2 = (short)v1->vy;
+    IR3 = (short)v1->vz;
+    OP(cmd25);
+    v2->vx = MAC1;
+    v2->vy = MAC2;
+    v2->vz = MAC3;
+    M.m[0][0] = d1;
+    M.m[1][1] = d2;
+    M.m[2][2] = d3;
+    return v2;
+}
+
+VECTOR* OuterProduct0(VECTOR* v0, VECTOR* v1, VECTOR* v2) {
+    return OuterProduct(v0, v1, v2, 0x170000C);
+}
+
+VECTOR* OuterProduct12(VECTOR* v0, VECTOR* v1, VECTOR* v2) {
+    return OuterProduct(v0, v1, v2, 0x178000C);
 }
 
 void Psyz_GteStsxy(unsigned int* out) { *out = pack_xy(SXP, SYP); }
