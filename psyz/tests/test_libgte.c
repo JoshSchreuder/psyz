@@ -2,8 +2,23 @@
 #include <psyz.h>
 #include <kernel.h>
 #include <libgte.h>
+#include <psyz/gte.h>
 #include <libgpu.h>
 #include <string.h>
+
+#ifdef __psyz
+#define GTE_SET_ZSF3(v) Psyz_GteCtrlWrite(29, (unsigned int)(v))
+#define GTE_SET_ZSF4(v) Psyz_GteCtrlWrite(30, (unsigned int)(v))
+#define GTE_SET_DQA(v) Psyz_GteCtrlWrite(27, (unsigned int)(v))
+#define GTE_SET_DQB(v) Psyz_GteCtrlWrite(28, (unsigned int)(v))
+#define GTE_READ_IR0(v) ((v) = (int)Psyz_GteDataRead(8))
+#else
+#define GTE_SET_ZSF3(v) __asm__ volatile("ctc2	%0, $29" : : "r"(v))
+#define GTE_SET_ZSF4(v) __asm__ volatile("ctc2	%0, $30" : : "r"(v))
+#define GTE_SET_DQA(v) __asm__ volatile("ctc2	%0, $27" : : "r"(v))
+#define GTE_SET_DQB(v) __asm__ volatile("ctc2	%0, $28" : : "r"(v))
+#define GTE_READ_IR0(v) __asm__ volatile("mfc2	%0, $8;nop" : "=r"(v))
+#endif
 
 ZTEST_SETUP(gte) { InitGeom(); }
 ZTEST_TEARDOWN(gte) { InitGeom(); }
@@ -1515,4 +1530,255 @@ ZTEST(gte, setgeomoffset_accepts_negative_offset) {
     gte_SetGeomScreen(1000);
     GeomRtps(&v, &sxy);
     zexpect_u32_eq(SXY(69, -13), sxy);
+}
+
+typedef struct {
+    int sxy, sz, mac0, flag;
+    VECTOR mac;
+} RtpsResult;
+
+static void RtpsResultRead(RtpsResult* r) {
+    gte_stsxy(&r->sxy);
+    gte_stsz(&r->sz);
+    gte_stopz(&r->mac0);
+    gte_stflg(&r->flag);
+    gte_stlvnl(&r->mac);
+}
+
+ZTEST(gte, cmd_00_behaves_like_rtps) {
+    SVECTOR v = {100, -50, 300}, other = {-20, 70, 900};
+    RtpsResult exp, act;
+    SetupProjection();
+    gte_ldv0(&v);
+    Psyz_GteCommand(0x0180001);
+    RtpsResultRead(&exp);
+    gte_ldv0(&other);
+    gte_rtps();
+    gte_ldv0(&v);
+    Psyz_GteCommand(0x0180000);
+    RtpsResultRead(&act);
+    zexpect_u32_eq(SXY(236, 81), exp.sxy);
+    zexpect_u32_eq(exp.sxy, act.sxy);
+    zexpect_u32_eq(exp.sz, act.sz);
+    zexpect_s32_eq(exp.mac0, act.mac0);
+    zexpect_u32_eq(exp.flag, act.flag);
+    zexpect_s32_eq(exp.mac.vx, act.mac.vx);
+    zexpect_s32_eq(exp.mac.vy, act.mac.vy);
+    zexpect_s32_eq(exp.mac.vz, act.mac.vz);
+}
+
+static void DcplSetup(void) {
+    MATRIX m = {{{0x1000, 0, 0}, {0, 0x1000, 0}, {0, 0, 0x1000}}};
+    SVECTOR ir = {0x800, 0x400, 0xC00};
+    unsigned int rgb = RGBCD(100, 150, 200, 0x38);
+    gte_SetRotMatrix(&m);
+    gte_ldv0(&ir);
+    gte_rtv0();
+    gte_SetFarColor(20, 250, 60);
+    gte_ldrgb(&rgb);
+    gte_lddp(0x600);
+}
+
+ZTEST(gte, cmd_1a_behaves_like_dcpl) {
+    unsigned int exp_rgb = 0, act_rgb = 0;
+    int exp_flag = 0, act_flag = 0;
+    VECTOR exp_mac, act_mac;
+    DcplSetup();
+    Psyz_GteCommand(0x0680029);
+    gte_strgb(&exp_rgb);
+    gte_stflg(&exp_flag);
+    gte_stlvnl(&exp_mac);
+    DcplSetup();
+    Psyz_GteCommand(0x068001A);
+    gte_strgb(&act_rgb);
+    gte_stflg(&act_flag);
+    gte_stlvnl(&act_mac);
+    zexpect_u32_eq(RGBCD(38, 117, 116, 0x38), exp_rgb);
+    zexpect_u32_eq(exp_rgb, act_rgb);
+    zexpect_u32_eq(exp_flag, act_flag);
+    zexpect_s32_eq(exp_mac.vx, act_mac.vx);
+    zexpect_s32_eq(exp_mac.vy, act_mac.vy);
+    zexpect_s32_eq(exp_mac.vz, act_mac.vz);
+}
+
+ZTEST(gte, gte_ldsz3_loads_sz1_to_sz3) {
+    unsigned int sz1 = 0xDEADBEEF, sz2 = 0xDEADBEEF, sz3 = 0xDEADBEEF;
+    gte_ldsz3(1111, 2222, 3333);
+    gte_stsz3(&sz1, &sz2, &sz3);
+    zexpect_u32_eq(1111, sz1);
+    zexpect_u32_eq(2222, sz2);
+    zexpect_u32_eq(3333, sz3);
+}
+
+ZTEST(gte, gte_ldsz4_loads_sz0_to_sz3) {
+    unsigned int sz0 = 0xDEADBEEF, sz1 = 0xDEADBEEF, sz2 = 0xDEADBEEF,
+                 sz3 = 0xDEADBEEF;
+    gte_ldsz4(1111, 2222, 3333, 4444);
+    gte_stsz4(&sz0, &sz1, &sz2, &sz3);
+    zexpect_u32_eq(1111, sz0);
+    zexpect_u32_eq(2222, sz1);
+    zexpect_u32_eq(3333, sz2);
+    zexpect_u32_eq(4444, sz3);
+}
+
+ZTEST(gte, gte_ldsz3_keeps_low_16_bits) {
+    unsigned int sz1 = 0xDEADBEEF, sz2 = 0xDEADBEEF, sz3 = 0xDEADBEEF;
+    gte_ldsz3(0x12345, 0xFFFF, 0x10000);
+    gte_stsz3(&sz1, &sz2, &sz3);
+    zexpect_u32_eq(0x2345, sz1);
+    zexpect_u32_eq(0xFFFF, sz2);
+    zexpect_u32_eq(0, sz3);
+}
+
+ZTEST(gte, gte_ldsz3_feeds_avsz3) {
+    unsigned int otz = 0xDEADBEEF;
+    gte_ldsz3(1000, 2000, 3000);
+    gte_avsz3();
+    gte_stotz(&otz);
+    zexpect_u32_eq(499, otz);
+}
+
+ZTEST(gte, gte_ldsz4_feeds_avsz4) {
+    unsigned int otz = 0xDEADBEEF;
+    gte_ldsz4(0x1000, 0x2000, 0x3000, 0x4000);
+    gte_avsz4();
+    gte_stotz(&otz);
+    zexpect_u32_eq(0xA00, otz);
+}
+
+static void ZeroIr(void) {
+    SVECTOR zero = {0, 0, 0};
+    gte_ldv0(&zero);
+    gte_rtv0();
+}
+
+ZTEST(gte, dpcs_flags_far_color_difference_saturation) {
+    unsigned int rgb = RGBCD(0, 0, 0, 0x20), out = 0;
+    int flag = 0;
+    gte_SetFarColor(0x1000, 0, 0);
+    gte_ldrgb(&rgb);
+    gte_lddp(0);
+    gte_dpcs();
+    gte_strgb(&out);
+    gte_stflg(&flag);
+    zexpect_u32_eq(rgb, out);
+    zexpect_u32_eq(0x81000000, (unsigned int)flag);
+}
+
+ZTEST(gte, dpcs_far_color_difference_ignores_lm) {
+    unsigned int rgb = RGBCD(100, 0, 0, 0x20), out = 0;
+    int flag = 0;
+    gte_SetFarColor(0, 0, 0);
+    gte_ldrgb(&rgb);
+    gte_lddp(0);
+    Psyz_GteCommand(0x0780410);
+    gte_strgb(&out);
+    gte_stflg(&flag);
+    zexpect_u32_eq(rgb, out);
+    zexpect_u32_eq(0, (unsigned int)flag);
+}
+
+ZTEST(gte, dpcs_flags_far_color_difference_overflow) {
+    unsigned int rgb = RGBCD(1, 0, 0, 0x20), out = 0;
+    int flag = 0;
+    gte_SetFarColor(0x08000000, 0, 0);
+    gte_ldrgb(&rgb);
+    gte_lddp(0);
+    gte_dpcs();
+    gte_strgb(&out);
+    gte_stflg(&flag);
+    zexpect_u32_eq(rgb, out);
+    zexpect_u32_eq(0x89000000, (unsigned int)flag);
+}
+
+ZTEST(gte, dpct_flags_far_color_difference_saturation) {
+    unsigned int c[3] = {RGBCD(0, 0, 0, 0x20), RGBCD(0, 0, 0, 0x20),
+                         RGBCD(0, 0, 0, 0x20)};
+    int flag = 0;
+    gte_SetFarColor(0, 0x1000, 0);
+    gte_ldrgb3c(c);
+    gte_lddp(0);
+    Psyz_GteCommand(0x0F8002A);
+    gte_stflg(&flag);
+    zexpect_u32_eq(0x80800000, (unsigned int)flag);
+}
+
+ZTEST(gte, intpl_flags_far_color_difference_saturation) {
+    unsigned int rgb = RGBCD(0, 0, 0, 0x20);
+    int flag = 0;
+    ZeroIr();
+    gte_SetFarColor(0, 0, 0x1000);
+    gte_ldrgb(&rgb);
+    gte_lddp(0);
+    Psyz_GteCommand(0x0980011);
+    gte_stflg(&flag);
+    zexpect_u32_eq(0x00400000, (unsigned int)flag);
+}
+
+ZTEST(gte, dcpl_flags_far_color_difference_saturation) {
+    unsigned int rgb = RGBCD(0, 0, 0, 0x20);
+    int flag = 0;
+    ZeroIr();
+    gte_SetFarColor(-0x1000, 0, 0);
+    gte_ldrgb(&rgb);
+    gte_lddp(0);
+    Psyz_GteCommand(0x0680029);
+    gte_stflg(&flag);
+    zexpect_u32_eq(0x81000000, (unsigned int)flag);
+}
+
+ZTEST(gte, dcpl_ignores_unused_command_bits) {
+    unsigned int exp_rgb = 0, act_rgb = 0;
+    int exp_flag = 0, act_flag = 0;
+    VECTOR exp_mac, act_mac;
+    DcplSetup();
+    Psyz_GteCommand(0x0680029);
+    gte_strgb(&exp_rgb);
+    gte_stflg(&exp_flag);
+    gte_stlvnl(&exp_mac);
+    DcplSetup();
+    Psyz_GteCommand(0x1F81BE9);
+    gte_strgb(&act_rgb);
+    gte_stflg(&act_flag);
+    gte_stlvnl(&act_mac);
+    zexpect_u32_eq(RGBCD(38, 117, 116, 0x38), act_rgb);
+    zexpect_u32_eq(exp_flag, act_flag);
+    zexpect_s32_eq(exp_mac.vx, act_mac.vx);
+    zexpect_s32_eq(exp_mac.vy, act_mac.vy);
+    zexpect_s32_eq(exp_mac.vz, act_mac.vz);
+}
+
+ZTEST(gte, mvmva_far_color_first_step_ignores_lm) {
+    MATRIX m = {{{0x1000, 0, 0}, {0, 0x1000, 0}, {0, 0, 0x1000}}};
+    int flag = 0;
+    gte_SetRotMatrix(&m);
+    ZeroIr();
+    gte_SetFarColor(-1, 0, 0);
+    Psyz_GteCommand(0x0084412);
+    gte_stflg(&flag);
+    zexpect_u32_eq(0, (unsigned int)flag);
+}
+
+typedef struct {
+    int ir0, mac0, flag;
+} DepthResult;
+
+static void RtpsWithDepth(int dqb, DepthResult* r) {
+    SVECTOR v = {10, 20, 30};
+    SetupProjection();
+    GTE_SET_DQA(0);
+    GTE_SET_DQB(dqb);
+    gte_ldv0(&v);
+    gte_rtps();
+    GTE_READ_IR0(r->ir0);
+    gte_stopz(&r->mac0);
+    gte_stflg(&r->flag);
+}
+
+ZTEST(gte, rtps_ir0_flags_fraction_above_limit) {
+    DepthResult r;
+    RtpsWithDepth(0x1000001, &r);
+    zexpect_s32_eq(0x1000, r.ir0);
+    zexpect_s32_eq(0x1000001, r.mac0);
+    zexpect_u32_eq(0x00001000, (unsigned int)r.flag);
 }

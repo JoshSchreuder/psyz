@@ -1340,6 +1340,17 @@ void Psyz_GteStRgb3Gt4(void* polyGt4) {
 
 void Psyz_GteLdDp(long p) { IR0 = (short)p; }
 
+void Psyz_GteLdSz3(long sz1, long sz2, long sz3) {
+    SZ1 = (u16)sz1;
+    SZ2 = (u16)sz2;
+    SZ3 = (u16)sz3;
+}
+
+void Psyz_GteLdSz4(long sz0, long sz1, long sz2, long sz3) {
+    SZ0 = (u16)sz0;
+    Psyz_GteLdSz3(sz1, sz2, sz3);
+}
+
 void Psyz_GteLdClmv(void* p) {
     short* s = (short*)p;
     IR1 = s[0];
@@ -1659,8 +1670,10 @@ static unsigned clz16(unsigned x) {
         if ((unsigned long long)(dq_m + 0x80000000LL) >> 32)                   \
             (f) |= dq_m < 0 ? FLAG_MAC0_OVF_NEG : FLAG_MAC0_OVF_POS;           \
         MAC0 = (int)dq_m;                                                      \
-        SAT_FLAG(dq_ir, (int)(dq_m >> 12), 0, 0x1000, FLAG_IR0_SAT, f);        \
-        IR0 = (short)dq_ir;                                                    \
+        if (dq_m < 0 || dq_m > 0x1000000)                                      \
+            (f) |= FLAG_IR0_SAT;                                               \
+        dq_ir = (int)(dq_m >> 12);                                             \
+        IR0 = (short)CLAMP(dq_ir, 0, 0x1000);                                  \
     } while (0)
 #define NCLIP_CALC(out, x0, y0, x1, y1, x2, y2, f)                             \
     do {                                                                       \
@@ -1703,9 +1716,10 @@ static unsigned clz16(unsigned x) {
         dq_lo &= 0xFFFF;                                                       \
         MAC0_OVF(dq_hi, f);                                                    \
         MAC0 = (int)(((unsigned)dq_hi << 16) | dq_lo);                         \
-        SAT_FLAG(dq_ir, dq_hi * 16 + (int)(dq_lo >> 12), 0, 0x1000,            \
-                 FLAG_IR0_SAT, f);                                             \
-        IR0 = (short)dq_ir;                                                    \
+        if ((unsigned)dq_hi > 0x100 || (dq_hi == 0x100 && dq_lo))              \
+            (f) |= FLAG_IR0_SAT;                                               \
+        dq_ir = dq_hi * 16 + (int)(dq_lo >> 12);                               \
+        IR0 = (short)CLAMP(dq_ir, 0, 0x1000);                                  \
     } while (0)
 #define NCLIP_CALC(out, x0, y0, x1, y1, x2, y2, f)                             \
     do {                                                                       \
@@ -1955,6 +1969,21 @@ static inline void matrix_vec_mul(int sf, int lm, int mx, int vx, int cv) {
     mat_vec(sf, lm, m, x, y, z, t[0], t[1], t[2]);
 }
 
+static inline int far_color_diff(int fc, int in, int shift, int idx) {
+    long long v = (long long)fc * 4096 - in;
+    int d = (int)(v >> shift);
+    if (v >= (1LL << 43)) {
+        FLAG |= FLAG_MAC1_OVF_POS >> idx;
+    } else if (v < -(1LL << 43)) {
+        FLAG |= FLAG_MAC1_OVF_NEG >> idx;
+    }
+    if (d < -0x8000 || d > 0x7FFF) {
+        FLAG |= FLAG_IR1_SAT >> idx;
+        return d < 0 ? -0x8000 : 0x7FFF;
+    }
+    return d;
+}
+
 // Depth-cue subroutine: MAC_n = inN + IR0 * sat_s16((FC_n<<12 - inN) >> sf*12),
 // shifted right by sf*12. Used by DPCS/DPCT/DCPL/INTPL/NCDS/NCDT/CDP.
 //
@@ -1965,12 +1994,9 @@ static inline void matrix_vec_mul(int sf, int lm, int mx, int vx, int cv) {
     do {                                                                       \
         int dc_s = (sf) ? 12 : 0;                                              \
         int dc_r = (inR), dc_g = (inG), dc_b = (inB);                          \
-        int dc_dr = (int)(((long long)L2.t[0] * 4096 - dc_r) >> dc_s);         \
-        int dc_dg = (int)(((long long)L2.t[1] * 4096 - dc_g) >> dc_s);         \
-        int dc_db = (int)(((long long)L2.t[2] * 4096 - dc_b) >> dc_s);         \
-        dc_dr = CLAMP(dc_dr, -0x8000, 0x7FFF);                                 \
-        dc_dg = CLAMP(dc_dg, -0x8000, 0x7FFF);                                 \
-        dc_db = CLAMP(dc_db, -0x8000, 0x7FFF);                                 \
+        int dc_dr = far_color_diff(L2.t[0], dc_r, dc_s, 0);                    \
+        int dc_dg = far_color_diff(L2.t[1], dc_g, dc_s, 1);                    \
+        int dc_db = far_color_diff(L2.t[2], dc_b, dc_s, 2);                    \
         MAC1 = (dc_r + IR0 * dc_dr) >> dc_s;                                   \
         MAC2 = (dc_g + IR0 * dc_dg) >> dc_s;                                   \
         MAC3 = (dc_b + IR0 * dc_db) >> dc_s;                                   \
@@ -3123,21 +3149,19 @@ void Psyz_GteCtrlWrite(unsigned idx, unsigned int v) {
 static void NCLIP_cmd(unsigned int cmd) { NCLIP(); }
 static void AVSZ3_cmd(unsigned int cmd) { AVSZ3(); }
 static void AVSZ4_cmd(unsigned int cmd) { AVSZ4(); }
+static void NOOP(unsigned int cmd) { (void)cmd; }
 
+// 0x00 mirrors 0x01, verified on hardware. Undocumented on psx-spx.
+// 0x1A mirrors 0x29, verified on hardware. Also undocumented on psx-spx.
 static void (*const gte_ops[64])(unsigned int cmd) = {
-    [0x01] = RTPS,      [0x06] = NCLIP_cmd, [0x0C] = OP,   [0x10] = DPCS,
-    [0x11] = INTPL,     [0x12] = MVMVA,     [0x13] = NCDS, [0x14] = CDP,
-    [0x16] = NCDT,      [0x1B] = NCCS,      [0x1C] = CC,   [0x1E] = NCS,
-    [0x20] = NCT,       [0x28] = SQR,       [0x29] = DCPL, [0x2A] = DPCT,
-    [0x2D] = AVSZ3_cmd, [0x2E] = AVSZ4_cmd, [0x30] = RTPT, [0x3D] = GPF,
-    [0x3E] = GPL,       [0x3F] = NCCT,
+    RTPS, RTPS,  NOOP,  NOOP, NOOP, NOOP,      NCLIP_cmd, NOOP, // 00-07
+    NOOP, NOOP,  NOOP,  NOOP, OP,   NOOP,      NOOP,      NOOP, // 08-0F
+    DPCS, INTPL, MVMVA, NCDS, CDP,  NOOP,      NCDT,      NOOP, // 10-17
+    NOOP, NOOP,  DCPL,  NCCS, CC,   NOOP,      NCS,       NOOP, // 18-1F
+    NCT,  NOOP,  NOOP,  NOOP, NOOP, NOOP,      NOOP,      NOOP, // 20-27
+    SQR,  DCPL,  DPCT,  NOOP, NOOP, AVSZ3_cmd, AVSZ4_cmd, NOOP, // 28-2F
+    RTPT, NOOP,  NOOP,  NOOP, NOOP, NOOP,      NOOP,      NOOP, // 30-37
+    NOOP, NOOP,  NOOP,  NOOP, NOOP, GPF,       GPL,       NCCT, // 38-3F
 };
 
-void Psyz_GteCommand(unsigned int cmd) {
-    unsigned op = cmd & 0x3F;
-    if (gte_ops[op]) {
-        gte_ops[op](cmd);
-    } else {
-        WARNF("unhandled GTE op:%02X", op);
-    }
-}
+void Psyz_GteCommand(unsigned int cmd) { gte_ops[cmd & 0x3F](cmd); }

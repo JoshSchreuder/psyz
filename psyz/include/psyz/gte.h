@@ -69,9 +69,19 @@ void Psyz_GteCtrlWrite(unsigned reg, unsigned int value);
  * external emulator to forward COP2 instructions into PsyZ's GTE state.
  * https://psx-spx.consoledev.net/geometrytransformationenginegte/
  *
+ * On a real PlayStation it emits the COP2 instruction instead, so `cmd` must
+ * be a compile-time constant there.
+ *
  * @param cmd 25-bit GTE command word
  */
+#ifdef __psyz
 void Psyz_GteCommand(unsigned int cmd);
+#else
+#define Psyz_GteCommand(cmd)                                                   \
+    __asm__ volatile("nop;"                                                    \
+                     "nop;"                                                    \
+                     ".word %0" ::"i"(0x4A000000 | (cmd)))
+#endif
 
 void Psyz_GteLdRgb(CVECTOR* v);
 void Psyz_GteStRgb(CVECTOR* v);
@@ -83,6 +93,8 @@ void Psyz_GteStRgb3Gt3(void* polyGt3);
 void Psyz_GteStRgb3G4(void* polyG4);
 void Psyz_GteStRgb3Gt4(void* polyGt4);
 void Psyz_GteLdDp(long p);
+void Psyz_GteLdSz3(long sz1, long sz2, long sz3);
+void Psyz_GteLdSz4(long sz0, long sz1, long sz2, long sz3);
 void Psyz_GteNccs(void);
 void Psyz_GteLdClmv(void* p);
 void Psyz_GteStClmv(void* p);
